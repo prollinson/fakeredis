@@ -185,6 +185,34 @@ module FakeRedis
       @client.get("key1").should be == "arc"
     end
 
+
+    it "should count the bits in the string value stored at key" do
+      
+      @client.setbit("key1", 5, 1)
+      @client.setbit("key1", 3, 1)
+      @client.setbit("key1", 11, 1)
+
+      @client.bitcount("key1").should == 3
+    end
+
+    it "should count the 2nd to 5th bits in the string value stored at key" do
+      
+      @client.setbit("key1", 2, 1)
+      @client.setbit("key1", 3, 1)
+      @client.setbit("key1", 11, 1)
+
+      @client.bitcount("key1", 2, 5).should == 2
+    end
+
+    it "should count the 3rd from end to last bit in the string value stored at key" do
+      
+      @client.setbit("key1", 2, 1)
+      @client.setbit("key1", 3, 1)
+      @client.setbit("key1", 13, 1)
+
+      @client.bitcount("key1", -3, -1).should == 1
+    end
+
     it "should set the value and expiration of a key" do
       @client.setex("key1", 30, "value1")
 

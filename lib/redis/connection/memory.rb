@@ -608,6 +608,16 @@ class Redis
         "OK"
       end
 
+      def bitcount(key, start=0, theend=nil)
+        old_val = data[key] ? data[key].unpack('B*')[0].split("") : []
+        count = 0
+        theend = old_val.size if theend.nil?
+        for i in start..theend do 
+            count += old_val[i].to_i
+        end
+        count
+      end
+
       def setbit(key, offset, bit)
         old_val = data[key] ? data[key].unpack('B*')[0].split("") : []
         size_increment = [((offset/8)+1)*8-old_val.length, 0].max

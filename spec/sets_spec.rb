@@ -13,6 +13,13 @@ module FakeRedis
       @client.smembers("key").should be == ["value"]
     end
 
+    it "should raise error if command arguments count is not enough" do
+      expect { @client.sadd("key", []) }.to raise_error(Redis::CommandError, "ERR wrong number of arguments for 'sadd' command")
+      expect { @client.sinter(*[]) }.to raise_error(Redis::CommandError, "ERR wrong number of arguments for 'sinter' command")
+
+      @client.smembers("key").should be_empty
+    end
+
     it "should add multiple members to a set" do
       @client.sadd("key", %w(value other something more)).should be == 4
       @client.sadd("key", %w(and additional values)).should be == 3
@@ -37,6 +44,13 @@ module FakeRedis
       @client.sadd("key3", "e")
 
       @client.sdiff("key1", "key2", "key3").should =~ ["b", "d"]
+    end
+
+    it "should subtract from a nonexistent set" do
+      @client.sadd("key2", "a")
+      @client.sadd("key2", "b")
+
+      @client.sdiff("key1", "key2").should == []
     end
 
     it "should subtract multiple sets and store the resulting set in a key" do
@@ -166,6 +180,82 @@ module FakeRedis
       @client.sunionstore("key", "key1", "key2", "key3")
 
       @client.smembers("key").should =~ ["a", "b", "c", "d", "e"]
+    end
+  end
+
+  describe 'srandmember' do
+    before(:each) do
+      @client = Redis.new
+    end
+
+    context 'with a set that has three elements' do
+      before do
+        @client.sadd("key1", "a")
+        @client.sadd("key1", "b")
+        @client.sadd("key1", "c")
+      end
+
+      context 'when called without the optional number parameter' do
+        it 'is a random element from the set' do
+          random_element = @client.srandmember("key1")
+
+          ['a', 'b', 'c'].include?(random_element).should be_true
+        end
+      end
+
+      context 'when called with the optional number parameter of 1' do
+        it 'is an array of one random element from the set' do
+          random_elements = @client.srandmember("key1", 1)
+
+          [['a'], ['b'], ['c']].include?(@client.srandmember("key1", 1)).should be_true
+        end
+      end
+
+      context 'when called with the optional number parameter of 2' do
+        it 'is an array of two unique, random elements from the set' do
+          random_elements = @client.srandmember("key1", 2)
+
+          random_elements.count.should == 2
+          random_elements.uniq.count.should == 2
+          random_elements.all? do |element|
+            ['a', 'b', 'c'].include?(element).should be_true
+          end
+        end
+      end
+
+      context 'when called with an optional parameter of -100' do
+        it 'is an array of 100 random elements from the set, some of which are repeated' do
+          random_elements = @client.srandmember("key1", -100)
+
+          random_elements.count.should == 100
+          random_elements.uniq.count.should <= 3
+          random_elements.all? do |element|
+            ['a', 'b', 'c'].include?(element).should be_true
+          end
+        end
+      end
+
+      context 'when called with an optional parameter of 100' do
+        it 'is an array of all of the elements from the set, none of which are repeated' do
+          random_elements = @client.srandmember("key1", 100)
+
+          random_elements.count.should == 3
+          random_elements.uniq.count.should == 3
+          random_elements.should =~ ['a', 'b', 'c']
+        end
+      end
+    end
+
+    context 'with an empty set' do
+      before { @client.del("key1") }
+
+      it 'is nil without the extra parameter' do
+        @client.srandmember("key1").should be_nil
+      end
+
+      it 'is an empty array with an extra parameter' do
+        @client.srandmember("key1", 1).should == []
+      end
     end
   end
 end

@@ -77,7 +77,7 @@ class Redis
       end
 
       def write(command)
-        meffod = command.shift
+        meffod = command.shift.to_s.downcase.to_sym
         if respond_to?(meffod)
           reply = send(meffod, *command)
         else
@@ -131,7 +131,7 @@ class Redis
 
       def info
         {
-          "redis_version" => "0.07",
+          "redis_version" => "2.6.16",
           "connected_clients" => "1",
           "connected_slaves" => "0",
           "used_memory" => "3187",
@@ -150,7 +150,7 @@ class Redis
 
       def bgsave ; end
 
-      def bgreriteaof ; end
+      def bgrewriteaof ; end
 
       def move key, destination_id
         raise Redis::CommandError, "ERR source and destination objects are the same" if destination_id == database_id
@@ -185,7 +185,9 @@ class Redis
       end
 
       def mget(*keys)
-        raise Redis::CommandError, "wrong number of arguments for 'mget' command" if keys.empty?
+        raise_argument_error('mget') if keys.empty?
+        # We work with either an array, or list of arguments
+        keys = keys.first if keys.size == 1
         data.values_at(*keys)
       end
 
@@ -210,6 +212,7 @@ class Redis
       end
 
       def hdel(key, field)
+        field = field.to_s
         data_type_check(key, Hash)
         data[key] && data[key].delete(field)
         remove_key_for_empty_collection(key)
@@ -222,8 +225,7 @@ class Redis
       end
 
       def keys(pattern = "*")
-        regexp = Regexp.new(pattern.split("*").map { |r| Regexp.escape(r) }.join(".*"))
-        data.keys.select { |key| key =~ regexp }
+        data.keys.select { |key| File.fnmatch(pattern, key) }
       end
 
       def randomkey
@@ -264,7 +266,18 @@ class Redis
       def ltrim(key, start, stop)
         data_type_check(key, Array)
         return unless data[key]
-        data[key] = data[key][start..stop]
+
+        if start < 0 && data[key].count < start.abs
+          # Example: we have a list of 3 elements and
+          # we give it a ltrim list, -5, -1. This means
+          # it should trim to a max of 5. Since 3 < 5
+          # we should not touch the list. This is consistent
+          # with behavior of real Redis's ltrim with a negative
+          # start argument.
+          data[key]
+        else
+          data[key] = data[key][start..stop]
+        end
       end
 
       def lindex(key, index)
@@ -279,14 +292,14 @@ class Redis
         case where
           when :before then data[key].insert(index, value)
           when :after  then data[key].insert(index + 1, value)
-          else raise Redis::CommandError, "ERR syntax error"
+          else raise_syntax_error
         end
       end
 
       def lset(key, index, value)
         data_type_check(key, Array)
         return unless data[key]
-        raise(Redis::CommandError, "ERR index out of range") if index >= data[key].size
+        raise Redis::CommandError, "ERR index out of range" if index >= data[key].size
         data[key][index] = value
       end
 
@@ -372,6 +385,7 @@ class Redis
       def sadd(key, value)
         data_type_check(key, ::Set)
         value = Array(value)
+        raise_argument_error('sadd') if value.empty?
 
         result = if data[key]
           old_set = data[key].dup
@@ -415,6 +429,8 @@ class Redis
       end
 
       def sinter(*keys)
+        raise_argument_error('sinter') if keys.empty?
+
         keys.each { |k| data_type_check(k, ::Set) }
         return ::Set.new if keys.any? { |k| data[k].nil? }
         keys = keys.map { |k| data[k] || ::Set.new }
@@ -446,7 +462,7 @@ class Redis
       def sdiff(key1, *keys)
         [key1, *keys].each { |k| data_type_check(k, ::Set) }
         keys = keys.map { |k| data[k] || ::Set.new }
-        keys.inject(data[key1]) do |memo, set|
+        keys.inject(data[key1] || Set.new) do |memo, set|
           memo - set
         end.to_a
       end
@@ -457,15 +473,14 @@ class Redis
         data[destination] = ::Set.new(result)
       end
 
-      def srandmember(key)
-        data_type_check(key, ::Set)
-        return nil unless data[key]
-        data[key].to_a[rand(data[key].size)]
+      def srandmember(key, number=nil)
+        number.nil? ? srandmember_single(key) : srandmember_multiple(key, number)
       end
 
       def del(*keys)
         keys = keys.flatten(1)
-        raise Redis::CommandError, "ERR wrong number of arguments for 'del' command" if keys.empty?
+        raise_argument_error('del') if keys.empty?
+
         old_count = data.keys.size
         keys.each do |key|
           data.delete(key)
@@ -508,7 +523,7 @@ class Redis
         if data.expires.include?(key) && (ttl = data.expires[key].to_i - Time.now.to_i) > 0
           ttl
         else
-          -1
+          exists(key) ? -1 : -2
         end
       end
 
@@ -544,18 +559,32 @@ class Redis
       def hmset(key, *fields)
         # mapped_hmset gives us [[:k1, "v1", :k2, "v2"]] for `fields`. Fix that.
         fields = fields[0] if mapped_param?(fields)
-        raise Redis::CommandError, "ERR wrong number of arguments for HMSET" if fields.empty? || fields.size.odd?
+        raise_argument_error('hmset') if fields.empty?
+
+        is_list_of_arrays = fields.all?{|field| field.instance_of?(Array)}
+
+        raise_argument_error('hmset') if fields.size.odd? and !is_list_of_arrays
+        raise_argument_error('hmset') if is_list_of_arrays and !fields.all?{|field| field.length == 2}
+
         data_type_check(key, Hash)
         data[key] ||= {}
-        fields.each_slice(2) do |field|
-          data[key][field[0].to_s] = field[1].to_s
+
+        if is_list_of_arrays
+          fields.each do |pair|
+            data[key][pair[0].to_s] = pair[1].to_s
+          end
+        else
+          fields.each_slice(2) do |field|
+            data[key][field[0].to_s] = field[1].to_s
+          end
         end
       end
 
       def hmget(key, *fields)
-        raise Redis::CommandError, "wrong number of arguments for 'hmget' command" if fields.empty?
+        raise_argument_error('hmget')  if fields.empty?
+
         data_type_check(key, Hash)
-        fields.map do |field|
+        fields.flatten.map do |field|
           field = field.to_s
           if data[key]
             data[key][field]
@@ -579,18 +608,30 @@ class Redis
 
       def hincrby(key, field, increment)
         data_type_check(key, Hash)
+        field = field.to_s
         if data[key]
-          data[key][field] = (data[key][field.to_s].to_i + increment.to_i).to_s
+          data[key][field] = (data[key][field].to_i + increment.to_i).to_s
         else
           data[key] = { field => increment.to_s }
         end
         data[key][field].to_i
       end
 
+      def hincrbyfloat(key, field, increment)
+        data_type_check(key, Hash)
+        field = field.to_s
+        if data[key]
+          data[key][field] = (data[key][field].to_f + increment.to_f).to_s
+        else
+          data[key] = { field => increment.to_s }
+        end
+        data[key][field]
+      end
+
       def hexists(key, field)
         data_type_check(key, Hash)
         return false unless data[key]
-        data[key].key?(field)
+        data[key].key?(field.to_s)
       end
 
       def sync ; end
@@ -622,7 +663,7 @@ class Redis
         old_val = data[key] ? data[key].unpack('B*')[0].split("") : []
         size_increment = [((offset/8)+1)*8-old_val.length, 0].max
         old_val += Array.new(size_increment).map{"0"}
-        original_val = old_val[offset]
+        original_val = old_val[offset].to_i
         old_val[offset] = bit.to_s
         new_val = ""
         old_val.each_slice(8){|b| new_val = new_val + b.join("").to_i(2).chr }
@@ -633,6 +674,7 @@ class Redis
       def setex(key, seconds, value)
         data[key] = value.to_s
         expire(key, seconds)
+        "OK"
       end
 
       def setrange(key, offset, value)
@@ -644,6 +686,10 @@ class Redis
       def mset(*pairs)
         # Handle pairs for mapped_mset command
         pairs = pairs[0] if mapped_param?(pairs)
+        raise_argument_error('mset') if pairs.empty? || pairs.size == 1
+        # We have to reply with a different error message here to be consistent with redis-rb 3.0.6 / redis-server 2.8.1
+        raise_argument_error("mset", "mset_odd") if pairs.size.odd?
+
         pairs.each_slice(2) do |pair|
           data[pair[0].to_s] = pair[1].to_s
         end
@@ -688,6 +734,7 @@ class Redis
         case data[key]
           when nil then "none"
           when String then "string"
+          when ZSet then "zset"
           when Hash then "hash"
           when Array then "list"
           when ::Set then "set"
@@ -718,23 +765,56 @@ class Redis
         "OK"
       end
 
+      def scan(start_cursor, *args)
+        match = "*"
+        count = 10
+
+        if args.size.odd?
+          raise_argument_error('scan')
+        end
+
+        if idx = args.index("MATCH")
+          match = args[idx + 1]
+        end
+
+        if idx = args.index("COUNT")
+          count = args[idx + 1]
+        end
+
+        start_cursor = start_cursor.to_i
+        data_type_check(start_cursor, Fixnum)
+
+        cursor = start_cursor
+        next_keys = []
+
+        if start_cursor + count >= data.length
+          next_keys = keys(match)[start_cursor..-1]
+          cursor = 0
+        else
+          cursor = start_cursor + 10
+          next_keys = keys(match)[start_cursor..cursor]
+        end
+
+        return "#{cursor}", next_keys
+      end
+
       def zadd(key, *args)
         if !args.first.is_a?(Array)
           if args.size < 2
-            raise Redis::CommandError, "ERR wrong number of arguments for 'zadd' command"
+            raise_argument_error('zadd')
           elsif args.size.odd?
-            raise Redis::CommandError, "ERR syntax error"
+            raise_syntax_error
           end
         else
           unless args.all? {|pair| pair.size == 2 }
-            raise(Redis::CommandError, "ERR syntax error")
+            raise_syntax_error
           end
         end
 
         data_type_check(key, ZSet)
         data[key] ||= ZSet.new
 
-        if args.size == 2
+        if args.size == 2 && !(Array === args.first)
           score, value = args
           exists = !data[key].key?(value.to_s)
           data[key][value.to_s] = score
@@ -750,10 +830,15 @@ class Redis
 
       def zrem(key, value)
         data_type_check(key, ZSet)
-        exists = false
-        exists = data[key].delete(value.to_s) if data[key]
+        values = Array(value)
+        return 0 unless data[key]
+
+        response = values.map do |v|
+          data[key].delete(v.to_s) if data[key].has_key?(v.to_s)
+        end.compact.size
+
         remove_key_for_empty_collection(key)
-        !!exists
+        response
       end
 
       def zcard(key)
@@ -783,12 +868,16 @@ class Redis
 
       def zrank(key, value)
         data_type_check(key, ZSet)
-        data[key].keys.sort_by {|k| data[key][k] }.index(value.to_s)
+        z = data[key]
+        return unless z
+        z.keys.sort_by {|k| z[k] }.index(value.to_s)
       end
 
       def zrevrank(key, value)
         data_type_check(key, ZSet)
-        data[key].keys.sort_by {|k| -data[key][k] }.index(value.to_s)
+        z = data[key]
+        return unless z
+        z.keys.sort_by {|k| -z[k] }.index(value.to_s)
       end
 
       def zrange(key, start, stop, with_scores = nil)
@@ -837,6 +926,7 @@ class Redis
       end
 
       def zrevrangebyscore(key, max, min, *opts)
+        opts = opts.flatten
         data_type_check(key, ZSet)
         return [] unless data[key]
 
@@ -885,6 +975,19 @@ class Redis
       end
 
       private
+        def raise_argument_error(command, match_string=command)
+          error_message = if %w(hmset mset_odd).include?(match_string.downcase)
+            "ERR wrong number of arguments for #{command.upcase}"
+          else
+            "ERR wrong number of arguments for '#{command}' command"
+          end
+
+          raise Redis::CommandError, error_message
+        end
+
+        def raise_syntax_error
+          raise Redis::CommandError, "ERR syntax error"
+        end
 
         def remove_key_for_empty_collection(key)
           del(key) if data[key] && data[key].empty?
@@ -893,7 +996,7 @@ class Redis
         def data_type_check(key, klass)
           if data[key] && !data[key].is_a?(klass)
             warn "Operation against a key holding the wrong kind of value: Expected #{klass} at #{key}."
-            raise Redis::CommandError.new("ERR Operation against a key holding the wrong kind of value")
+            raise Redis::CommandError.new("WRONGTYPE Operation against a key holding the wrong kind of value")
           end
         end
 
@@ -912,6 +1015,25 @@ class Redis
 
         def mapped_param? param
           param.size == 1 && param[0].is_a?(Array)
+        end
+
+        def srandmember_single(key)
+          data_type_check(key, ::Set)
+          return nil unless data[key]
+          data[key].to_a[rand(data[key].size)]
+        end
+
+        def srandmember_multiple(key, number)
+          return [] unless data[key]
+          if number >= 0
+            # replace with `data[key].to_a.sample(number)` when 1.8.7 is deprecated
+            (1..number).inject([]) do |selected, _|
+              available_elements = data[key].to_a - selected
+              selected << available_elements[rand(available_elements.size)]
+            end.compact
+          else
+            (1..-number).map { data[key].to_a[rand(data[key].size)] }.flatten
+          end
         end
     end
   end

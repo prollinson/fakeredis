@@ -49,6 +49,30 @@ module FakeRedis
       @client.getbit("key1", 10).should be == 1
     end
 
+    context 'when a bit is previously set to 0' do
+      before { @client.setbit("key1", 10, 0) }
+
+      it 'setting it to 1 returns 0' do
+        expect(@client.setbit("key1", 10, 1)).to eql 0
+      end
+
+      it 'setting it to 0 returns 0' do
+        expect(@client.setbit("key1", 10, 0)).to eql 0
+      end
+    end
+
+    context 'when a bit is previously set to 1' do
+      before { @client.setbit("key1", 10, 1) }
+
+      it 'setting it to 0 returns 1' do
+        expect(@client.setbit("key1", 10, 0)).to eql 1
+      end
+
+      it 'setting it to 1 returns 1' do
+        expect(@client.setbit("key1", 10, 1)).to eql 1
+      end
+    end
+
     it "should get a substring of the string stored at a key" do
       @client.set("key1", "This a message")
 
@@ -134,6 +158,15 @@ module FakeRedis
       @client.set("key3", "value3")
 
       @client.mget("key1", "key2", "key3").should be == ["value1", "value2", "value3"]
+      @client.mget(["key1", "key2", "key3"]).should be == ["value1", "value2", "value3"]
+    end
+
+    it "returns nil for non existent keys" do
+      @client.set("key1", "value1")
+      @client.set("key3", "value3")
+
+      @client.mget("key1", "key2", "key3", "key4").should be == ["value1", nil, "value3", nil]
+      @client.mget(["key1", "key2", "key3", "key4"]).should be == ["value1", nil, "value3", nil]
     end
 
     it 'raises an argument error when not passed any fields' do
@@ -147,6 +180,15 @@ module FakeRedis
 
       @client.get("key1").should be == "value1"
       @client.get("key2").should be == "value2"
+    end
+
+    it "should raise error if command arguments count is wrong" do
+      expect { @client.mset }.to raise_error(Redis::CommandError, "ERR wrong number of arguments for 'mset' command")
+      expect { @client.mset(:key1) }.to raise_error(Redis::CommandError, "ERR wrong number of arguments for 'mset' command")
+      expect { @client.mset(:key1, "value", :key2) }.to raise_error(Redis::CommandError, "ERR wrong number of arguments for MSET")
+
+      @client.get("key1").should be_nil
+      @client.get("key2").should be_nil
     end
 
     it "should set multiple keys to multiple values, only if none of the keys exist" do

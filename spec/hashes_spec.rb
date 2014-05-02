@@ -71,6 +71,17 @@ module FakeRedis
       @client.hincrby("key1", "cont2", "5").should be == 5
     end
 
+    it "should increment the float value of a hash field by the given float" do
+      @client.hset("key1", "cont1", 5.0)
+      @client.hincrbyfloat("key1", "cont1", 4.1).should be == 9.1
+      @client.hget("key1", "cont1").should be == "9.1"
+    end
+
+    it "should increment non existing hash keys" do
+      @client.hget("key1", "cont2").should be_nil
+      @client.hincrbyfloat("key1", "cont2", 5.5).should be == 5.5
+    end
+
     it "should get all the fields in a hash" do
       @client.hset("key1", "i1", "val1")
       @client.hset("key1", "i2", "val2")
@@ -91,6 +102,8 @@ module FakeRedis
       @client.hset("key1", "i2", "val2")
 
       @client.hmget("key1", "i1", "i2", "i3").should =~ ["val1", "val2", nil]
+      @client.hmget("key1", ["i1", "i2", "i3"]).should =~ ["val1", "val2", nil]
+
       @client.hmget("key2", "i1", "i2").should be == [nil, nil]
     end
 
@@ -153,5 +166,30 @@ module FakeRedis
       @client.hvals("key1").should =~ ["val1", "val2"]
     end
 
+    it "should accept a list of array pairs as arguments and not throw an invalid argument number error" do
+      @client.hmset("key1", [:k1, "val1"], [:k2, "val2"], [:k3, "val3"])
+      @client.hget("key1", :k1).should be == "val1"
+      @client.hget("key1", :k2).should be == "val2"
+      @client.hget("key1", :k3).should be == "val3"
+    end
+
+    it "should reject a list of arrays that contain an invalid number of arguments" do
+      expect { @client.hmset("key1", [:k1, "val1"], [:k2, "val2", "bogus val"]) }.to raise_error(Redis::CommandError, "ERR wrong number of arguments for HMSET")
+    end
+
+    it "should convert a integer field name to string for hdel" do
+      @client.hset("key1", "1", 1)
+      @client.hdel("key1", 1).should be(1)
+    end
+
+    it "should convert a integer field name to string for hexists" do
+      @client.hset("key1", "1", 1)
+      @client.hexists("key1", 1).should be_true
+    end
+
+    it "should convert a integer field name to string for hincrby" do
+      @client.hset("key1", 1, 0)
+      @client.hincrby("key1", 1, 1).should be(1)
+    end
   end
 end
